@@ -1,0 +1,191 @@
+---
+title: "8×H20 服务器部署 DeepSeek-V4-Flash 踩坑实录"
+slug: deploy-deepseek-v4-flash-on-h20
+date: 2026-04-28
+description: "记录在 8×NVIDIA H20 (768GB 显存) 服务器上尝试部署 DeepSeek-V4-Flash 的完整过程，包括 SGLang、vLLM 的兼容性问题和最终结论。"
+tags: ["DeepSeek", "LLM", "部署", "vLLM", "SGLang"]
+published: true
+---
+
+## 背景
+
+DeepSeek-V4 于 2026 年 4 月 24 日发布并开源，我第一时间尝试在自己的 8×H20 服务器上部署 V4-Flash 版本（284B MoE，激活 13B）。
+
+**服务器配置：**
+- 8× NVIDIA H20 GPU（96GB/卡，共 768GB 显存）
+- NVIDIA Driver 535.161.08
+- Ubuntu 22.04
+- Python 3.10 / CUDA 12.8
+
+V4-Flash 在 FP8 下只需约 320GB 显存，768GB 绰绰有余。理论上完全能跑，但实际过程远没那么顺利。
+
+## 第一次尝试：SGLang
+
+服务器上已有 SGLang 0.5.9，首先尝试用它来部署。
+
+### 下载模型
+
+通过代理从 HuggingFace 下载模型，约 7 分钟完成 149GB（74 个文件，46 个 safetensors）：
+
+```bash
+export http_proxy=http://your-proxy:3128
+export https_proxy=$http_proxy
+
+python3 -c "
+from huggingface_hub import snapshot_download
+snapshot_download(
+    repo_id='deepseek-ai/deepseek-v4-flash',
+    local_dir='/root/models/deepseek-v4-flash'
+)
+"
+```
+
+<Callout type="info">
+如果服务器在内网无法直接访问 HuggingFace，需要配置 HTTP 代理。`huggingface-cli` 在新版 `huggingface-hub` 中已被废弃，改用 `hf` 命令或 Python API。
+</Callout>
+
+### 启动失败
+
+```bash
+python3 -m sglang.launch_server \
+  --model-path /root/models/deepseek-v4-flash \
+  --tensor-parallel-size 8 \
+  --trust-remote-code \
+  --host 0.0.0.0 --port 30000
+```
+
+报错：
+
+```
+ValueError: The checkpoint you are trying to load has model type
+`deepseek_v4` but Transformers does not recognize this architecture.
+```
+
+**原因：** SGLang 依赖 `transformers` 库的 `AutoConfig.from_pretrained()` 来加载模型配置。但即使是 transformers 最新的 dev 版本（5.7.0.dev0），也还没有合并 `deepseek_v4` 架构的支持代码。V4 发布才 3 天，HuggingFace 官方 PR 还没合入。
+
+尝试了升级 SGLang 到 0.5.10.post1 + transformers 从 GitHub main 分支安装，均无效。
+
+## 第二次尝试：vLLM
+
+vLLM 社区更新更快，0.20.0 号称 Day 0 适配了 DeepSeek-V4。
+
+### 安装 vLLM 0.20.0
+
+为了避免和现有环境冲突，创建了新的 conda 环境：
+
+```bash
+conda create -n vllm python=3.12 -y
+/opt/conda/envs/vllm/bin/pip install vllm
+```
+
+安装成功后自带了完整的依赖链：
+- PyTorch 2.11.0
+- CUDA 13 Runtime（`nvidia-cuda-runtime-13.0.96`）
+- transformers 5.6.2
+
+### 启动又失败了
+
+```
+RuntimeError: The NVIDIA driver on your system is too old
+(found version 12080). Please update your GPU driver.
+```
+
+**原因：** vLLM 0.20.0 依赖的 PyTorch 2.11 是用 CUDA 13 编译的，而 CUDA 13 的驱动接口需要 NVIDIA Driver >= 555。我的服务器驱动是 535，不够。
+
+### 降级到 vLLM 0.19.1
+
+既然 0.20 需要新驱动，那退回到 0.19.1（CUDA 12 兼容）。安装成功了，但启动时又回到了老问题——`deepseek_v4` 架构不被识别。因为 0.19.1 是 V4 发布之前的版本。
+
+## 核心矛盾
+
+画了一张图就很清楚了：
+
+```
+                    ┌─────────────────────┐
+                    │  DeepSeek-V4-Flash  │
+                    │  (model_type:       │
+                    │   deepseek_v4)      │
+                    └─────────┬───────────┘
+                              │
+            ┌─────────────────┼─────────────────┐
+            │                 │                 │
+   ┌────────▼────────┐  ┌────▼───────┐  ┌──────▼──────┐
+   │ SGLang 0.5.10   │  │ vLLM 0.19  │  │ vLLM 0.20   │
+   │                 │  │            │  │             │
+   │ transformers    │  │ transformers│  │ 内置 V4 支持 │
+   │ 不认识 V4 ❌    │  │ 不认识 V4 ❌│  │ ✅           │
+   └─────────────────┘  └────────────┘  └──────┬──────┘
+                                               │
+                                        需要 CUDA 13
+                                               │
+                                        需要 Driver ≥ 555
+                                               │
+                                        当前 Driver 535 ❌
+```
+
+| 方案 | V4 支持 | CUDA 兼容 | 结果 |
+|------|---------|-----------|------|
+| SGLang 0.5.x | ❌ transformers 不认识 | ✅ | 失败 |
+| vLLM 0.19.x | ❌ transformers 不认识 | ✅ | 失败 |
+| vLLM 0.20.0 | ✅ 内置支持 | ❌ 需要 CUDA 13 + Driver 555 | 失败 |
+
+## 为什么容器也救不了？
+
+有人可能会想：在 Docker 容器里装 CUDA 13 不就行了？
+
+**不行。** NVIDIA GPU 的驱动架构是这样的：
+
+```
+应用层 (vLLM / PyTorch)
+        ↓
+CUDA Runtime (容器内，可以任意切换版本)
+        ↓
+NVIDIA 内核驱动 (宿主机，/dev/nvidia*)
+        ↓
+GPU 硬件
+```
+
+容器能切换的只有 CUDA Runtime 层。但 CUDA 13 的 Runtime 调用了新的驱动 API（符号），而 Driver 535 的内核模块里没有这些符号。所以即使容器内安装了 CUDA 13，调用到驱动层时还是会报 `undefined symbol`。
+
+**唯一的解法是升级宿主机的 NVIDIA 驱动。**
+
+## 过程中的其他坑
+
+### 1. `huggingface-cli` 被废弃
+
+新版 `huggingface-hub` (≥1.12) 废弃了 `huggingface-cli download`，改用 `hf download`。但 `hf` 命令又和 `typer` 包版本冲突。最可靠的方式是直接用 Python API：
+
+```python
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id="deepseek-ai/deepseek-v4-flash", local_dir="./model")
+```
+
+### 2. libstdc++ 版本问题
+
+在干净的 conda 环境里安装 vLLM 0.19 后，启动报 `CXXABI_1.3.15 not found`。原因是系统的 `/lib/x86_64-linux-gnu/libstdc++.so.6` 太旧。解决方法：
+
+```bash
+export LD_LIBRARY_PATH=/opt/conda/envs/vllm/lib:$LD_LIBRARY_PATH
+```
+
+让 conda 环境里的新版 libstdc++ 优先加载。
+
+### 3. 内网服务器需要代理
+
+几乎所有外网操作（pip install、HuggingFace 下载、GitHub clone）都需要配置 HTTP 代理。conda 默认不走 HTTP 代理，需要单独配置或改用 pip。
+
+## 结论和建议
+
+如果你也想部署 DeepSeek-V4：
+
+**能跑的条件：**
+- NVIDIA Driver ≥ 555（支持 CUDA 13）
+- vLLM ≥ 0.20.0
+- 8×H20 或等效 ≥ 320GB 显存（FP8）
+
+**暂时跑不了的话：**
+- 先部署 **DeepSeek-V3**（671B MoE），SGLang / vLLM 0.19 完全支持
+- 等 1-2 周 HuggingFace transformers 合并 V4 支持后，SGLang + CUDA 12 也能跑
+- 或者联系运维升级 NVIDIA 驱动
+
+**V4-Flash 值得等吗？** 绝对值得。284B MoE 只激活 13B 参数，推理效率极高，在 8×H20 上能跑得很流畅。等驱动或框架更新后，这会是性价比最高的私有化部署方案。
