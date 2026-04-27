@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev --webpack",
     "build": "next build --webpack && node scripts/generate-rss.js",
-    "start": "next start"
+    "start": "next start",
+    "new": "node scripts/new-post.js",
+    "publish": "node scripts/publish.js"
   },
   "dependencies": {
     "clsx": "^2.1.1",
