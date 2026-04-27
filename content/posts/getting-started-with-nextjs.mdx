@@ -1,0 +1,73 @@
+---
+title: "Next.js 15 入门指南"
+slug: getting-started-with-nextjs
+date: 2026-04-26
+description: "一篇面向初学者的 Next.js 15 教程，涵盖 App Router、Server Components 等核心概念。"
+tags: ["Next.js", "React", "教程"]
+published: true
+---
+
+## 什么是 Next.js
+
+Next.js 是一个基于 React 的全栈框架，提供了：
+
+- **服务端渲染 (SSR)** — 更好的 SEO 和首屏性能
+- **静态站点生成 (SSG)** — 构建时预渲染页面
+- **App Router** — 基于文件系统的路由
+- **Server Components** — 减少客户端 JavaScript
+
+## 快速开始
+
+创建一个新的 Next.js 项目非常简单：
+
+```bash title="Terminal"
+npx create-next-app@latest my-app --typescript --tailwind --app
+cd my-app
+npm run dev
+```
+
+打开浏览器访问 `http://localhost:3000`，你就能看到默认页面了。
+
+## App Router 基础
+
+Next.js 15 使用基于文件系统的 App Router：
+
+```text
+app/
+├── layout.tsx    # 根布局
+├── page.tsx      # 首页 (/)
+├── about/
+│   └── page.tsx  # 关于页 (/about)
+└── posts/
+    └── [slug]/
+        └── page.tsx  # 动态路由 (/posts/xxx)
+```
+
+每个 `page.tsx` 文件自动成为一个路由页面，非常直观。
+
+## Server Components
+
+在 App Router 中，组件默认是 Server Component：
+
+```tsx title="app/posts/page.tsx" {3-5}
+// 这是一个 Server Component — 在服务端渲染
+// 可以直接访问数据库、文件系统等
+export default async function PostsPage() {
+  const posts = await fetchPosts(); // 服务端获取数据
+  return (
+    <ul>
+      {posts.map(post => (
+        <li key={post.id}>{post.title}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+<Callout type="info">
+需要使用浏览器 API（如 useState、onClick）时，在文件顶部添加 `"use client"` 指令。
+</Callout>
+
+## 小结
+
+Next.js 15 提供了非常好的开发体验，推荐所有 React 开发者尝试。
