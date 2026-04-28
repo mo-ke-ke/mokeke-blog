@@ -123,7 +123,7 @@ consumer = KafkaConsumer(
 consumer.subscribe([SOURCE_TOPIC])
 ```
 
-理论上两者等价，但在某些 Kafka 云服务（如腾讯云 CKafka）上，**写法 A 的兼容性更好**。
+理论上两者等价，但在某些托管 Kafka 云服务上，**写法 A 的兼容性更好**。
 
 另外视频管线还有一个关键调用：
 
