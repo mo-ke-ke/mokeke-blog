@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="840" viewBox="0 0 1400 840" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="80" y1="60" x2="1320" y2="780" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F7FBFF"/>
+      <stop offset="1" stop-color="#F5F7FA"/>
+    </linearGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#1D4ED8"/>
+      <stop offset="1" stop-color="#60A5FA"/>
+    </linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#0F766E"/>
+      <stop offset="1" stop-color="#5EEAD4"/>
+    </linearGradient>
+    <linearGradient id="orange" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#C2410C"/>
+      <stop offset="1" stop-color="#FDBA74"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#166534"/>
+      <stop offset="1" stop-color="#86EFAC"/>
+    </linearGradient>
+    <style>
+      .title { font: 700 42px 'Geist', 'Inter', sans-serif; fill: #111827; }
+      .subtitle { font: 500 20px 'Geist', 'Inter', sans-serif; fill: #4B5563; }
+      .card-title { font: 700 28px 'Geist', 'Inter', sans-serif; fill: #111827; }
+      .card-text { font: 500 18px 'Geist', 'Inter', sans-serif; fill: #334155; }
+      .small { font: 600 15px 'Geist', 'Inter', sans-serif; fill: #475569; }
+      .pill { font: 700 14px 'Geist', 'Inter', sans-serif; fill: white; }
+      .axis { font: 700 18px 'Geist', 'Inter', sans-serif; fill: #0F172A; }
+      .axis-text { font: 500 17px 'Geist', 'Inter', sans-serif; fill: #334155; }
+      .foot { font: 600 15px 'Geist', 'Inter', sans-serif; fill: #475569; }
+    </style>
+  </defs>
+
+  <rect x="24" y="24" width="1352" height="792" rx="36" fill="url(#bg)"/>
+  <rect x="24" y="24" width="1352" height="792" rx="36" stroke="#D9E5F2"/>
+
+  <text x="70" y="92" class="title">Four Classical Tokenizer Families</text>
+  <text x="70" y="126" class="subtitle">BPE / Byte-level BPE / WordPiece / Unigram LM can all be seen as different answers to the same question:</text>
+  <text x="70" y="154" class="subtitle">How do we turn text into token sequences that are compact, robust, and trainable?</text>
+
+  <g transform="translate(60 190)">
+    <rect width="300" height="270" rx="28" fill="white" stroke="#DCE7F3"/>
+    <rect x="22" y="22" width="120" height="34" rx="17" fill="url(#blue)"/>
+    <text x="42" y="44" class="pill">merge by freq</text>
+    <text x="22" y="95" class="card-title">BPE</text>
+    <text x="22" y="130" class="card-text">Start from small units.</text>
+    <text x="22" y="158" class="card-text">Repeatedly merge the most</text>
+    <text x="22" y="186" class="card-text">frequent adjacent pair.</text>
+    <text x="22" y="230" class="small">Mental model</text>
+    <text x="22" y="254" class="card-text">High-frequency piece compression.</text>
+  </g>
+
+  <g transform="translate(390 190)">
+    <rect width="300" height="270" rx="28" fill="white" stroke="#DCE7F3"/>
+    <rect x="22" y="22" width="162" height="34" rx="17" fill="url(#teal)"/>
+    <text x="40" y="44" class="pill">same BPE, bytes first</text>
+    <text x="22" y="95" class="card-title">BBPE</text>
+    <text x="22" y="130" class="card-text">The merge rule is still BPE,</text>
+    <text x="22" y="158" class="card-text">but the base unit is byte,</text>
+    <text x="22" y="186" class="card-text">not character.</text>
+    <text x="22" y="230" class="small">Mental model</text>
+    <text x="22" y="254" class="card-text">Universal coverage for open text.</text>
+  </g>
+
+  <g transform="translate(720 190)">
+    <rect width="300" height="270" rx="28" fill="white" stroke="#DCE7F3"/>
+    <rect x="22" y="22" width="156" height="34" rx="17" fill="url(#orange)"/>
+    <text x="38" y="44" class="pill">LM-oriented subwords</text>
+    <text x="22" y="95" class="card-title">WordPiece</text>
+    <text x="22" y="130" class="card-text">Looks like BPE in output,</text>
+    <text x="22" y="158" class="card-text">but chooses pieces by how much</text>
+    <text x="22" y="186" class="card-text">they help the language model.</text>
+    <text x="22" y="230" class="small">Mental model</text>
+    <text x="22" y="254" class="card-text">Greedy longest valid subword.</text>
+  </g>
+
+  <g transform="translate(1050 190)">
+    <rect width="300" height="270" rx="28" fill="white" stroke="#DCE7F3"/>
+    <rect x="22" y="22" width="150" height="34" rx="17" fill="url(#green)"/>
+    <text x="40" y="44" class="pill">probability + pruning</text>
+    <text x="22" y="95" class="card-title">Unigram LM</text>
+    <text x="22" y="130" class="card-text">Begin with a large candidate</text>
+    <text x="22" y="158" class="card-text">vocabulary, then keep the pieces</text>
+    <text x="22" y="186" class="card-text">that explain the corpus best.</text>
+    <text x="22" y="230" class="small">Mental model</text>
+    <text x="22" y="254" class="card-text">Model the best segmentation path.</text>
+  </g>
+
+  <g transform="translate(60 500)">
+    <rect width="1280" height="250" rx="28" fill="#FFFFFF" stroke="#DCE7F3"/>
+
+    <text x="26" y="44" class="axis">1. Base unit</text>
+    <text x="280" y="44" class="axis-text">BPE: usually character or pre-token piece</text>
+    <text x="710" y="44" class="axis-text">BBPE: byte</text>
+    <text x="910" y="44" class="axis-text">WordPiece / Unigram: token candidates over text pieces</text>
+
+    <line x1="24" y1="72" x2="1256" y2="72" stroke="#E5EDF5"/>
+
+    <text x="26" y="116" class="axis">2. Training objective</text>
+    <text x="280" y="116" class="axis-text">BPE / BBPE: repeatedly merge high-frequency adjacent pairs</text>
+    <text x="280" y="146" class="axis-text">WordPiece: pick pieces that better improve language modeling</text>
+    <text x="280" y="176" class="axis-text">Unigram: maximize segmentation probability, then prune weak pieces</text>
+
+    <line x1="24" y1="202" x2="1256" y2="202" stroke="#E5EDF5"/>
+
+    <text x="26" y="236" class="axis">3. Best-known use</text>
+    <text x="280" y="236" class="axis-text">BPE: strong general baseline</text>
+    <text x="590" y="236" class="axis-text">BBPE: web-scale mixed Unicode / emoji / symbols</text>
+    <text x="1010" y="236" class="axis-text">WordPiece: BERT-style encoders</text>
+    <text x="280" y="266" class="axis-text">Unigram: SentencePiece-heavy multilingual or no-whitespace pipelines</text>
+  </g>
+
+  <text x="70" y="786" class="foot">Rule of thumb: BPE asks “what merges most often?”, WordPiece asks “what helps the LM most?”, Unigram asks “what segmentation has the highest probability?”</text>
+</svg>

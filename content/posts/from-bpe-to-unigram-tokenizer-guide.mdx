@@ -1,0 +1,514 @@
+---
+title: "从 BPE 到 Unigram：一文讲清主流分词器"
+slug: from-bpe-to-unigram-tokenizer-guide
+date: 2026-05-04
+description: "系统梳理 BPE、Byte-level BPE、WordPiece 与 Unigram LM 的核心思想、训练流程、推理差异、典型场景与工程优化。"
+tags: ["Tokenizer", "LLM", "NLP", "BPE", "SentencePiece"]
+published: true
+---
+
+## 为什么 tokenizer 不是小问题
+
+大模型最终看到的不是字符串，而是一串 token id。`tokenizer` 决定了三件很实在的事情：
+
+- 同一句话会被切成多少个 token，也就是上下文窗口被“吃掉”得有多快。
+- 罕见词、代码、emoji、混合语言会不会被切得很碎，甚至直接变成 `UNK`。
+- 训练和推理时，文本预处理的 CPU 开销到底大不大。
+
+所以分词器不是“训练前随便配一下”的小组件，它其实是模型接口的一部分。模型 embedding 学到的是“这个词表上的 id 分布”，不是抽象意义上的自然语言。
+
+<Callout type="warning">
+分词器一旦和模型一起训练完成，就不能在不改 embedding 的前提下随便替换。换 tokenizer，本质上是在换输入空间。
+</Callout>
+
+## 先给一张总览图
+
+四类经典方案其实在回答同一个问题：怎样把文本切成一串既紧凑、又稳定、还方便训练的 token。
+
+<img src="/tokenizer-methods-overview.svg" alt="BPE、BBPE、WordPiece 与 Unigram 的整体对比图" width={1400} height={840} />
+
+一句话记忆：
+
+- `BPE`：先从小单位开始，不断合并“最常一起出现”的相邻片段。
+- `BBPE`：规则还是 BPE，但最底层单位不是字符，而是字节。
+- `WordPiece`：输出上很像 BPE，但它更关心“哪个子词更有利于语言模型”。
+- `Unigram LM`：先准备一个偏大的候选词表，再用概率模型保留真正有价值的词元。
+
+## BPE 是什么
+
+`BPE` 全称 `Byte Pair Encoding`，但在 NLP 语境里通常指“基于频次合并相邻子词”的那套训练思想。最常见的做法是：
+
+1. 先把词拆成最小单位，通常是字符，或者预分词后的更小片段。
+2. 统计所有相邻 pair 的出现次数。
+3. 选出现次数最高的 pair，合并成一个新 token。
+4. 用这个新 token 回写整个语料表示。
+5. 重复这个过程，直到达到目标词表大小。
+
+### 一个能看懂“更新语料表示”的例子
+
+假设训练语料里只有三个词：`low`、`lower`、`lowest`。
+
+```text
+Step 0: 初始表示
+low     -> l o w </w>
+lower   -> l o w e r </w>
+lowest  -> l o w e s t </w>
+
+pair 统计
+(l, o)   = 3
+(o, w)   = 3
+(w, e)   = 2
+(e, r)   = 1
+(e, s)   = 1
+(s, t)   = 1
+```
+
+这里 `(l, o)` 和 `(o, w)` 都是 `3`，出现了并列第一。
+
+如果当前实现的 tie-break 策略先选 `(l, o)`，就会生成新 token `lo`，然后把整个语料里的 `l o` 都改写成 `lo`：
+
+```text
+Step 1: 合并 (l, o) -> lo
+low     -> lo w </w>
+lower   -> lo w e r </w>
+lowest  -> lo w e s t </w>
+```
+
+这就是“更新语料表示，继续统计”的意思。不是只在统计表里记一下 `lo`，而是真的把语料内部表示改成了新 token 序列。接下来再重新统计：
+
+```text
+重新统计
+(lo, w)  = 3
+(w, e)   = 2
+(e, r)   = 1
+(e, s)   = 1
+(s, t)   = 1
+```
+
+于是下一步很自然会合并 `(lo, w)`：
+
+```text
+Step 2: 合并 (lo, w) -> low
+low     -> low </w>
+lower   -> low e r </w>
+lowest  -> low e s t </w>
+```
+
+你会看到高频片段 `low` 被“压缩”成了一个 token。这就是 BPE 的核心直觉。
+
+<Callout type="info">
+BPE 在 pair 频次并列时并没有唯一的数学答案。不同实现可能用“先出现者优先”“字典序优先”或稳定排序规则。只要规则固定，训练结果就是可复现的。
+</Callout>
+
+### BPE 的优点和局限
+
+优点：
+
+- 思路直接，训练和实现都相对简单。
+- 高频片段会很快变成完整 token，压缩率通常不错。
+- 作为通用基线非常稳，很多模型或工具链都支持。
+
+局限：
+
+- 它优化的是“频次压缩”，不是直接优化语言模型似然。
+- 如果底层单位是字符，遇到极端开放域文本时，`OOV` 和脏文本处理能力不如 byte-level 方案。
+- 不同语言、代码、emoji 混在一起时，字符级基础单元未必理想。
+
+## BBPE 是什么
+
+这里的 `BBPE` 一般指 `Byte-level BPE`。它不是换了一套训练目标，而是把 BPE 的最小单位从“字符”换成“字节”。
+
+换句话说：
+
+- `BPE`：常见起点是字符。
+- `BBPE`：起点固定是 `0..255` 的字节。
+- 合并规则：两者本质一样，都是反复合并高频相邻 pair。
+
+### 为什么 byte-level 很重要
+
+只要输入文本能编码成字节序列，就一定能被分出来，所以它天然解决了“字符集覆盖不全”的问题。
+
+这对下面这些场景很重要：
+
+- 开放网页语料，文本来源乱，编码混杂。
+- 代码、日志、URL、表情、特殊符号很多。
+- 多语言混合，甚至夹杂一些罕见 Unicode 字符。
+
+### 一个小例子
+
+假设文本是 `A😊`。UTF-8 下它会变成：
+
+```text
+A     -> 41
+😊    -> F0 9F 98 8A
+整体  -> [41] [F0] [9F] [98] [8A]
+```
+
+对于 `BBPE` 来说，训练初始单位不是 `A` 和 `😊` 这两个字符，而是 5 个字节 token。之后如果这个 emoji 很常见，模型就可能逐步学出：
+
+```text
+[F0 9F] -> 一个更大的片段
+[98 8A] -> 另一个更大的片段
+[F0 9F 98 8A] -> 最终合并成一个常用 emoji 片段
+```
+
+它的关键价值不是“更聪明地理解 emoji”，而是“永远有退路”。就算一个字符从来没见过，也能退回到字节级表示，而不是直接 `UNK`。
+
+### BBPE 的典型场景
+
+- 开放域 LLM，尤其是网页、代码、工具调用、日志混合场景。
+- 需要极强鲁棒性的文本入口。
+- 对 `OOV` 容忍度非常低的生产系统。
+
+`GPT-2`、`RoBERTa` 以及很多 `tiktoken` 风格编码器都属于这类路线。
+
+## WordPiece 是什么
+
+`WordPiece` 常被拿来和 BPE 放在一起讲，因为它们最后学出来的东西都像“子词词表”。但核心区别在训练准则：
+
+- `BPE` 更像在问：哪个相邻 pair 最常一起出现？
+- `WordPiece` 更像在问：加入哪个子词，对语言模型更有帮助？
+
+历史上 `WordPiece` 的完整训练细节并没有像 BPE 那样公开得特别彻底，所以今天工程里经常用“LM 导向的子词训练”来理解它。你可以把它看成：它不像 BPE 那样只盯频次，而会更关心子词对整体建模质量的贡献。
+
+### 推理时怎么切
+
+经典 `WordPiece` 在编码时常用“最长匹配优先”策略：
+
+1. 从当前剩余字符串开头出发。
+2. 找词表里最长的可匹配片段。
+3. 对非首片段通常使用 `##` 这类 continuation 标记。
+4. 如果整个词无法被合法切分，经典 BERT 风格实现会回退成 `UNK`。
+
+### 一个例子
+
+假设词表里有这些 token：
+
+```text
+un
+##break
+##able
+##ab
+##le
+```
+
+那么单词 `unbreakable` 会这样切：
+
+```text
+un | ##break | ##able
+```
+
+因为从当前位置出发，系统会优先找“最长且合法”的子词，而不是所有可能切法里再做全局搜索。
+
+### WordPiece 适合什么场景
+
+- 经典 `BERT` 系编码器。
+- 搜索、分类、匹配、信息抽取这类以 encoder 为主的 NLP 系统。
+- 需要和既有 `BERT` 生态保持兼容的工程场景。
+
+它的工程优势不是“绝对最好”，而是生态太成熟了。
+
+## Unigram Language Model 是什么
+
+`Unigram LM` 和前三种方法的思路很不一样。
+
+它不是从小单位一路合并上去，而是反过来：
+
+1. 先准备一个偏大的候选词表。
+2. 假设每个词元都有一个概率 `p(piece)`。
+3. 一个字符串可以被切成很多种方式，每种切法的概率等于各 piece 概率的乘积。
+4. 训练目标是让整个语料在这套词表下的概率尽可能大。
+5. 然后把贡献小的 piece 剪掉，重复优化。
+
+所以 `Unigram` 的问题不是“谁该被合并”，而是“当前词表里，哪些 piece 真值得留下来”。
+
+### 一个和我们前面讨论一致的例子：`abab`
+
+假设候选词表里有这些 piece：
+
+```text
+a   : 0.08
+b   : 0.08
+ab  : 0.40
+ba  : 0.19
+aba : 0.18
+bab : 0.07
+```
+
+那么字符串 `abab` 至少有这些切法：
+
+| 切分 | 概率 |
+|------|------|
+| `ab | ab` | `0.40 * 0.40 = 0.16` |
+| `aba | b` | `0.18 * 0.08 = 0.0144` |
+| `a | bab` | `0.08 * 0.07 = 0.0056` |
+| `a | ba | b` | `0.08 * 0.19 * 0.08 = 0.001216` |
+
+所以最佳切分会是：
+
+```text
+ab | ab
+```
+
+这也正好解释了你前面问的那个问题：为什么没有 `aba b` 或者 `a bab`？
+
+答案有两个：
+
+- 如果 `aba` 或 `bab` 根本不在候选词表里，那条路径就不存在。
+- 如果它们在词表里，但乘积概率更低，那它们就会输给 `ab | ab`。
+
+### 候选词表从哪来
+
+这是 `Unigram` 最容易被忽略的一步。
+
+候选词表通常不是“凭空枚举所有子串”，而是这样来的：
+
+- 先从字符开始，枚举高频子串。
+- 结合长度上限、最小频次、脚本规则做过滤。
+- 先保留一个比目标词表大得多的种子词表，比如目标是 `32k`，初始候选可能先放到 `100k+`。
+- 再用 EM 和剪枝慢慢缩到目标规模。
+
+`SentencePiece` 的 `Unigram` 路线就是这类思路的代表。
+
+### EM 在这里是怎么工作的
+
+`EM` 是 `Expectation-Maximization`，也就是“先按当前参数解释数据，再反过来更新参数”。
+
+放到 `Unigram LM` 里，可以粗略理解成：
+
+1. `E-step`：在当前 piece 概率下，计算每个 piece 在整份语料里“被用到多少次”的期望。
+2. `M-step`：用这些期望计数重新估计每个 piece 的概率。
+3. 剪掉贡献很小的 piece，再继续下一轮。
+
+### 用一个极简语料走一遍 EM
+
+假设语料只有两条：
+
+```text
+abab
+ab
+```
+
+初始 piece 概率还是沿用上面那组。此时：
+
+- `abab` 的后验概率质量主要落在 `ab | ab` 这条路径上。
+- `ab` 的后验概率质量主要落在 `ab` 这条路径上，而不是 `a | b`。
+
+于是 `E-step` 之后，`ab` 的期望使用次数会非常高，而 `bab`、`a`、`b` 这些 piece 的期望计数会明显更低。
+
+接着 `M-step` 做归一化更新，结果就会是：
+
+```text
+ab   概率上升
+aba  小幅下降或维持
+bab  概率下降
+a/b  概率下降
+```
+
+如果再叠加一次剪枝，低贡献 piece 可能直接被删掉。于是模型会越来越相信：
+
+```text
+abab -> ab | ab
+ab   -> ab
+```
+
+这就是 `Unigram` 为什么常被说成“先给大词表，再用概率和剪枝收缩”。
+
+<Callout type="info">
+真正实现时不会手工枚举所有切法，而是建一个 lattice，用 forward-backward 或 Viterbi 这类动态规划来做。`SentencePiece` 就是这样干的。
+</Callout>
+
+## 四种方案到底怎么对比
+
+先看核心差异：
+
+| 方法 | 基本单位 | 训练时主要在优化什么 | 编码时怎么切 | 典型代表 |
+|------|----------|----------------------|--------------|----------|
+| `BPE` | 字符或预分词片段 | 高频相邻 pair 的压缩 | 按 merge rank 合并 | 经典 NMT、很多 BPE 系 tokenizer |
+| `BBPE` | 字节 | 还是 BPE，只是底层换成 byte | 字节序列上按 merge rank 合并 | `GPT-2`、`RoBERTa`、`tiktoken` 风格 |
+| `WordPiece` | 子词候选 | 更偏向提升 LM 建模效果 | 最长匹配优先 | `BERT` 系模型 |
+| `Unigram LM` | 大候选词表 | 最大化语料似然并剪枝 | 最优路径搜索 | `SentencePiece Unigram`、`T5/mT5` 路线 |
+
+再看工程选择：
+
+- `BPE`：实现简单，压缩高频词很有效，是非常稳的 baseline。
+- `BBPE`：最鲁棒，尤其适合开放网页、代码、emoji、多语言脏数据。
+- `WordPiece`：非常适合继续沿用 `BERT` 生态，兼容性好。
+- `Unigram`：对多语言、无空格语言、原始文本训练很友好，但训练和推理通常比纯 BPE 更重一点。
+
+## 具体用在哪些场景
+
+如果把它们放到真实项目里，通常可以这么选：
+
+- 做通用 NLP baseline，数据相对干净，想要简单稳妥：优先看 `BPE`。
+- 做开放域 LLM，文本入口复杂，代码和符号很多：优先看 `BBPE`。
+- 做 `BERT` 家族分类、召回、匹配、NER：通常直接用 `WordPiece` 生态。
+- 做多语言、无空格语言、seq2seq、希望从原始文本直接训练：`SentencePiece Unigram` 很常见。
+
+一个现实原则比算法本身更重要：
+
+- 如果你是在训练自己的模型，可以选适合你数据分布的 tokenizer。
+- 如果你是在复用现成预训练模型，那就必须复用它原来的 tokenizer。
+
+## SentencePiece、tokenizers、tiktoken 这些工具怎么对应
+
+`SentencePiece` 确实是非常常用的分词库，尤其是在下面几类场景：
+
+- 多语言语料。
+- 中文、日文这类不能简单依赖空格分词的语料。
+- 希望“从原始文本直接训练 tokenizer”，而不是先把空格和标点预切好。
+
+常见工具可以这样理解：
+
+- `sentencepiece`：Google 出的经典库，最常见的是 `Unigram` 和 `BPE` 两种训练方式。
+- `tokenizers`：Hugging Face 的 Rust 后端，支持 `BPE`、`WordPiece`、`Unigram`，速度很快，工程里非常常用。
+- `transformers`：负责把 tokenizer 和模型配置绑定起来，适合训练和推理一起用。
+- `tiktoken`：高度优化的 byte-level BPE 编码器，推理侧很快，OpenAI 风格模型常见。
+- `subword-nmt`：研究时代很经典的 BPE 实现，适合理解历史脉络。
+
+### 训练示例 1：SentencePiece Unigram
+
+```bash title="Train SentencePiece Unigram"
+spm_train \
+  --input=corpus.txt \
+  --model_prefix=sp_unigram \
+  --model_type=unigram \
+  --vocab_size=32000 \
+  --character_coverage=0.9995
+```
+
+训练完成后通常会得到：
+
+- `sp_unigram.model`
+- `sp_unigram.vocab`
+
+### 训练示例 2：Hugging Face tokenizers 训练 BPE
+
+```python title="train_bpe.py"
+from tokenizers import Tokenizer, models, trainers, pre_tokenizers
+
+tokenizer = Tokenizer(models.BPE(unk_token="[UNK]"))
+tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel()
+
+trainer = trainers.BpeTrainer(
+    vocab_size=32000,
+    special_tokens=["[UNK]", "[BOS]", "[EOS]"]
+)
+
+tokenizer.train(["corpus.txt"], trainer)
+tokenizer.save("tokenizer.json")
+```
+
+### 推理示例：加载并编码
+
+```python title="infer.py"
+import sentencepiece as spm
+
+sp = spm.SentencePieceProcessor(model_file="sp_unigram.model")
+ids = sp.encode("tokenizer 决定模型看到的 id 序列", out_type=int)
+pieces = sp.encode("tokenizer 决定模型看到的 id 序列", out_type=str)
+
+print(ids)
+print(pieces)
+```
+
+## 训练和推理到底分别在做什么
+
+很多人把 tokenizer 看成“一个统一的黑盒”，但训练和推理的目标其实不一样。
+
+<img src="/tokenizer-train-infer-pipeline.svg" alt="Tokenizer 的训练流程与推理流程图" width={1400} height={800} />
+
+### 训练侧
+
+训练 tokenizer 时通常在做这几件事：
+
+1. 清洗和规范化语料，比如大小写、空白、Unicode 归一化、特殊 token 约定。
+2. 选择算法和词表大小，比如 `8k`、`32k`、`64k`。
+3. 学出词表和规则文件。
+4. 用压缩率、平均 tokens/句、领域术语覆盖率做评估。
+5. 冻结 tokenizer，再开始大模型训练。
+
+### 推理侧
+
+推理时事情简单得多，但要求特别稳定：
+
+1. 加载训练时那份完全相同的 tokenizer artifact。
+2. 把 prompt 规范化。
+3. 编码成 token id。
+4. 送入模型。
+5. 再把输出 id 解码回字符串。
+
+这里最重要的一条原则是：
+
+- 模型训练时用的 tokenizer 和推理时用的 tokenizer，必须是同一份。
+
+## 时间优化怎么做
+
+分词器的瓶颈大部分不是 GPU，而是 CPU 侧的字符串处理、查表和动态规划。
+
+### 训练侧优化
+
+- `BPE / BBPE` 的热点是 pair 计数和语料重写，常见优化是分片统计、并行归并、限制最大 token 长度、用 Rust/C++ 实现热路径。
+- `Unigram` 的热点是 lattice 构图和 EM 里的 forward-backward，常见优化是大词表快速剪枝、限制候选最大长度、只保留活跃 piece。
+- 规范化最好只做一次，不要每轮训练都重复做 Unicode 清洗。
+- 如果后续模型训练会反复读同一份文本，可以提前把语料编码成 token-id shard，减少重复 tokenize 的时间。
+
+### 推理侧优化
+
+- 尽量使用 `fast tokenizer`，不要在 Python 里自己写循环切词。
+- 批量编码比一条一条编码更省开销。
+- 复用 tokenizer 对象，不要每个请求重新初始化。
+- 对重复前缀使用 prefix cache，尤其是系统提示词很长的场景。
+- 流式解码时只处理新增 id，不要每次把整段输出重新 decode 一遍。
+
+## 算子优化看什么
+
+如果再往底层看，真正值得优化的不是一个抽象的“tokenize 算子”，而是几个非常具体的热点：
+
+- `Unicode normalization`：NFKC/NFC、空白折叠、大小写规则。
+- `pre-tokenization`：空格、标点、正则切分。
+- `lookup`：BPE 的 merge rank 查表，WordPiece 的前缀 trie 匹配。
+- `dynamic programming`：Unigram 的 Viterbi / forward-backward。
+- `decode`：byte 到字符的恢复、特殊 token 的跳过和拼接。
+
+工程上常见的提速方式是：
+
+- 用连续内存布局和紧凑 trie，减少随机访存。
+- 对字节扫描和字符分类做 SIMD 优化。
+- 把正则和 normalize 放到 Rust/C++ 层，而不是 Python 层。
+- 避免重复构建中间字符串，优先在 id 或 byte buffer 上操作。
+
+一句话说透：分词器优化首先是“文本系统优化”，其次才是“模型前处理优化”。
+
+## 能不能把 WordPiece 和 Unigram 混着做
+
+理论上可以。你完全可以：
+
+1. 先用频次或 WordPiece 风格规则生成一批候选子词。
+2. 再用 `Unigram LM` 的概率模型做筛选和剪枝。
+
+但这已经属于“自定义两阶段 tokenizer 设计”了，不是主流工具链默认提供的标准套路。
+
+生产里更常见的做法是：
+
+- 直接选一条成熟路线，比如 `SentencePiece Unigram`、`SentencePiece BPE`、`HF WordPiece`、`byte-level BPE`。
+- 把数据清洗、词表大小、特殊 token 设计好。
+- 然后保证训练和推理都严格使用同一份 tokenizer 文件。
+
+## 最后给一个选择建议
+
+如果你只想记住最关键的决策逻辑，可以记这几条：
+
+- 想要简单稳的通用基线：`BPE`。
+- 想要最强开放字符覆盖和线上鲁棒性：`BBPE`。
+- 在 `BERT` 生态里做 encoder 任务：`WordPiece`。
+- 想做多语言、无空格语言、或者更标准的原始文本训练：`Unigram + SentencePiece`。
+
+而真正落地时，不要只盯算法名字，还要同时看：
+
+- 你的数据干不干净。
+- 语言和字符集是否复杂。
+- 你是自己训模型，还是要兼容现成模型。
+- 线上瓶颈是在 token 数、CPU 编码速度，还是 OOV 鲁棒性。
+
+分词器这件事，说到底不是在找“理论最优”，而是在找“对你的语料和模型接口最合适的那一个”。

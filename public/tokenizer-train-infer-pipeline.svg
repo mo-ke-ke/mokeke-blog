@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="800" viewBox="0 0 1400 800" fill="none">
+  <defs>
+    <linearGradient id="bg2" x1="70" y1="50" x2="1330" y2="760" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAFCFF"/>
+      <stop offset="1" stop-color="#F4F7FB"/>
+    </linearGradient>
+    <style>
+      .title { font: 700 40px 'Geist', 'Inter', sans-serif; fill: #0F172A; }
+      .subtitle { font: 500 20px 'Geist', 'Inter', sans-serif; fill: #475569; }
+      .lane { font: 700 28px 'Geist', 'Inter', sans-serif; fill: #0F172A; }
+      .box-title { font: 700 21px 'Geist', 'Inter', sans-serif; fill: #0F172A; }
+      .box-text { font: 500 17px 'Geist', 'Inter', sans-serif; fill: #334155; }
+      .chip { font: 700 14px 'Geist', 'Inter', sans-serif; fill: white; }
+      .tip-title { font: 700 18px 'Geist', 'Inter', sans-serif; fill: #0F172A; }
+      .tip-text { font: 500 16px 'Geist', 'Inter', sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect x="24" y="24" width="1352" height="752" rx="36" fill="url(#bg2)" stroke="#D8E4F1"/>
+
+  <text x="70" y="92" class="title">Tokenizer Training vs. Model Serving</text>
+  <text x="70" y="126" class="subtitle">A production pipeline usually has two different optimization goals: build a stable tokenizer once, then make encoding and decoding cheap at scale.</text>
+
+  <text x="70" y="188" class="lane">Training lane</text>
+  <text x="746" y="188" class="lane">Inference lane</text>
+
+  <g transform="translate(60 224)">
+    <rect width="260" height="110" rx="24" fill="#FFFFFF" stroke="#D9E5F2"/>
+    <rect x="18" y="18" width="88" height="28" rx="14" fill="#2563EB"/>
+    <text x="37" y="37" class="chip">corpus</text>
+    <text x="18" y="72" class="box-title">Collect and normalize data</text>
+    <text x="18" y="98" class="box-text">Raw text, Unicode policy, whitespace,</text>
+    <text x="18" y="120" class="box-text">special tokens, domain coverage.</text>
+  </g>
+
+  <g transform="translate(350 224)">
+    <rect width="260" height="110" rx="24" fill="#FFFFFF" stroke="#D9E5F2"/>
+    <rect x="18" y="18" width="120" height="28" rx="14" fill="#0F766E"/>
+    <text x="36" y="37" class="chip">algorithm</text>
+    <text x="18" y="72" class="box-title">Choose method + vocab size</text>
+    <text x="18" y="98" class="box-text">BPE / BBPE / WordPiece / Unigram,</text>
+    <text x="18" y="120" class="box-text">plus 8k / 32k / 64k style trade-off.</text>
+  </g>
+
+  <g transform="translate(640 224)">
+    <rect width="260" height="110" rx="24" fill="#FFFFFF" stroke="#D9E5F2"/>
+    <rect x="18" y="18" width="90" height="28" rx="14" fill="#16A34A"/>
+    <text x="38" y="37" class="chip">train</text>
+    <text x="18" y="72" class="box-title">Fit tokenizer artifact</text>
+    <text x="18" y="98" class="box-text">Learn merges or piece probabilities,</text>
+    <text x="18" y="120" class="box-text">then save vocab + model files.</text>
+  </g>
+
+  <g transform="translate(930 224)">
+    <rect width="340" height="110" rx="24" fill="#FFFFFF" stroke="#D9E5F2"/>
+    <rect x="18" y="18" width="120" height="28" rx="14" fill="#C2410C"/>
+    <text x="37" y="37" class="chip">evaluate</text>
+    <text x="18" y="72" class="box-title">Validate before freezing</text>
+    <text x="18" y="98" class="box-text">Compression ratio, tokens per sentence,</text>
+    <text x="18" y="120" class="box-text">domain term coverage, speed, memory.</text>
+  </g>
+
+  <g transform="translate(760 408)">
+    <rect width="540" height="110" rx="24" fill="#FFFFFF" stroke="#D9E5F2"/>
+    <rect x="18" y="18" width="110" height="28" rx="14" fill="#7C3AED"/>
+    <text x="41" y="37" class="chip">encode</text>
+    <text x="18" y="72" class="box-title">Load the exact same tokenizer artifact</text>
+    <text x="18" y="98" class="box-text">Prompt -> normalize -> tokenize -> ids -> model -> ids -> decode</text>
+    <text x="18" y="120" class="box-text">Never swap tokenizer after model training unless you also retrain embeddings.</text>
+  </g>
+
+  <g transform="translate(760 550)">
+    <rect width="540" height="80" rx="22" fill="#EEF4FF" stroke="#C8DAF8"/>
+    <text x="18" y="34" class="box-title">Serving-time speed levers</text>
+    <text x="18" y="60" class="box-text">batch encode, prefix cache, reuse tokenizer object, async CPU workers, incremental decode</text>
+  </g>
+
+  <g transform="translate(60 408)">
+    <rect width="610" height="222" rx="24" fill="#FFFFFF" stroke="#D9E5F2"/>
+    <text x="22" y="38" class="tip-title">Offline training-side optimizations</text>
+    <text x="22" y="70" class="tip-text">1. Stream sharded corpora instead of loading everything into one Python process.</text>
+    <text x="22" y="100" class="tip-text">2. Use Rust/C++ implementations for counting and segmentation hot paths.</text>
+    <text x="22" y="130" class="tip-text">3. Pre-normalize once, not every epoch.</text>
+    <text x="22" y="160" class="tip-text">4. Pre-tokenize the final model-training dataset into token-id shards.</text>
+    <text x="22" y="190" class="tip-text">5. Track token fertility and memory, not just tokenizer loss.</text>
+  </g>
+
+  <g stroke="#9AB6DA" stroke-width="3" stroke-linecap="round">
+    <path d="M320 279H347"/>
+    <path d="M610 279H637"/>
+    <path d="M900 279H927"/>
+    <path d="M1130 334V377H1030"/>
+  </g>
+  <g fill="#9AB6DA">
+    <path d="M347 279L337 272V286L347 279Z"/>
+    <path d="M637 279L627 272V286L637 279Z"/>
+    <path d="M927 279L917 272V286L927 279Z"/>
+    <path d="M1030 377L1040 370V384L1030 377Z"/>
+  </g>
+
+  <text x="70" y="718" class="subtitle">Tokenizer bottlenecks are usually CPU-side string processing bottlenecks, not CUDA kernel bottlenecks. Optimize data flow, trie / hash lookup, SIMD normalization, and batching first.</text>
+</svg>
